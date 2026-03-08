@@ -1,0 +1,64 @@
+﻿# Environment variables — NEVER commit these
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+venv/
+env/
+.venv/
+
+# ML Models (too large for GitHub)
+*.tflite
+*.pth
+*.h5
+*.pb
+*.onnx
+saved_model/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads
+uploads/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+
+# Logs
+*.log
+logs/
+# Python backend
+venv/
+__pycache__/
+*.pyc
+*.pth
+*.h5
+*.onnx
+backend/.env
+backend/uploads/

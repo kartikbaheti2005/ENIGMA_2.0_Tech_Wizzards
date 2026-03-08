@@ -1,0 +1,21 @@
+fastapi
+uvicorn[standard]
+python-multipart
+# ── PyTorch ───────────────────────────────────────────────────────────────────
+torch
+torchvision
+Pillow
+# ── New: HTTP client for chatbot + outbreak APIs ──────────────────────────────
+httpx
+# ── Everything else ───────────────────────────────────────────────────────────
+numpy
+opencv-python-headless
+python-dotenv
+python-jose[cryptography]
+passlib[bcrypt]
+bcrypt==4.0.1
+pytz
+sqlalchemy
+pymysql
+cryptography
+reportlab
