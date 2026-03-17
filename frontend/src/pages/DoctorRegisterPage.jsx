@@ -9,7 +9,7 @@ import {
   Loader2, Sparkles, Check, ArrowRight
 } from 'lucide-react'
 
-const API = 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const inputCls = `w-full px-4 py-3 rounded-xl border text-sm font-medium outline-none transition-all
   bg-gray-50 border-gray-200 text-gray-900 placeholder-gray-400

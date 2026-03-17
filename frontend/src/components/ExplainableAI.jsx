@@ -166,8 +166,9 @@ const ConfidenceBar = ({ label, score, risk, delay }) => {
 }
 
 // ─── Main Component ────────────────────────────────────────────────────────
-const ExplainableAI = ({ diagnosis, allScores }) => {
+const ExplainableAI = ({ diagnosis, allScores, heatmapOverlay, heatmapOnly }) => {
   const [showDifferential, setShowDifferential] = useState(false)
+  const [heatmapView, setHeatmapView] = useState('overlay')
 
   const info = CLASS_KNOWLEDGE[diagnosis] || CLASS_KNOWLEDGE['nv']
   const features = info.features
@@ -189,6 +190,66 @@ const ExplainableAI = ({ diagnosis, allScores }) => {
       transition={{ duration: 0.5, delay: 0.2 }}
       className="bg-white rounded-2xl shadow-lg border border-blue-50 p-8 my-8 space-y-8"
     >
+
+      {/* ── Grad-CAM Heatmap ── */}
+      {heatmapOverlay && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="space-y-3"
+        >
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
+              AI Attention Heatmap
+            </h4>
+            <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+              <button
+                onClick={() => setHeatmapView('overlay')}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                  heatmapView === 'overlay'
+                    ? 'bg-white dark:bg-gray-700 text-blue-600 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 dark:text-gray-400'
+                }`}
+              >
+                Overlay
+              </button>
+              <button
+                onClick={() => setHeatmapView('heatmap')}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                  heatmapView === 'heatmap'
+                    ? 'bg-white dark:bg-gray-700 text-blue-600 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700 dark:text-gray-400'
+                }`}
+              >
+                Heatmap
+              </button>
+            </div>
+          </div>
+
+          <div className="relative rounded-xl overflow-hidden border border-blue-100 dark:border-blue-900/30">
+            <img
+              src={heatmapView === 'overlay' ? heatmapOverlay : heatmapOnly}
+              alt="Grad-CAM heatmap"
+              className="w-full object-cover rounded-xl"
+            />
+            <div className="absolute bottom-2 right-2 flex items-center gap-2 bg-black/60 rounded-lg px-3 py-1.5">
+              <div className="flex gap-0.5">
+                {['#0000ff', '#00ffff', '#00ff00', '#ffff00', '#ff0000'].map((c, i) => (
+                  <div key={i} style={{ background: c }} className="w-4 h-2 rounded-sm opacity-90" />
+                ))}
+              </div>
+              <span className="text-white text-[10px] font-medium">Low → High attention</span>
+            </div>
+          </div>
+
+          <p className="text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
+            <strong className="text-gray-600 dark:text-gray-300">Red/yellow regions</strong> = areas the AI focused on most when making this prediction.{' '}
+            <strong className="text-gray-600 dark:text-gray-300">Blue regions</strong> = areas that had little influence on the result.
+          </p>
+        </motion.div>
+      )}
+
       {/* ── Header ── */}
       <div className="flex items-center gap-3">
         <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center flex-shrink-0">

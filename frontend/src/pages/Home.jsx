@@ -227,7 +227,7 @@ const ScanTab = ({ token }) => {
     const formData = new FormData()
     formData.append('file', selectedImage)
     try {
-      const res = await axios.post('http://127.0.0.1:8000/predict', formData, {
+      const res = await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/predict`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
           ...(token && { Authorization: `Bearer ${token}` }),
@@ -310,7 +310,7 @@ const ScanTab = ({ token }) => {
               </motion.button>
             </div>
             <ResultCard result={result} />
-            <ExplainableAI diagnosis={result.diagnosis} allScores={result.all_scores} />
+            <ExplainableAI diagnosis={result.diagnosis} allScores={result.all_scores} heatmapOverlay={result.heatmap_overlay} heatmapOnly={result.heatmap_only} />
             <RecommendationPanel riskLevel={result.risk_level} />
           </motion.div>
         )}

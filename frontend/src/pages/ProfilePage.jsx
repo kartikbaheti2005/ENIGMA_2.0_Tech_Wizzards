@@ -2,13 +2,13 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   User, Mail, Phone, Calendar, Shield, Clock,
-  Activity, AlertTriangle, CheckCircle, TrendingUp,
+  Activity, AlertTriangle, AlertCircle, CheckCircle, TrendingUp,
   Eye, ChevronRight, Scan, Edit3, Save, X, Check, Download
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import axios from 'axios'
 
-const API = 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const RISK_STYLES = {
   'High Risk':     { badge: 'bg-red-100 text-red-700 border-red-200 dark:bg-red-900/25 dark:text-red-400 dark:border-red-800/50',     bar: 'bg-red-500',     dot: 'bg-red-500' },
@@ -17,8 +17,13 @@ const RISK_STYLES = {
 }
 
 const NAME_MAP = {
+  // old model
   mel: 'Melanoma', bcc: 'Basal Cell Carcinoma', akiec: 'Actinic Keratosis',
   bkl: 'Benign Keratosis', df: 'Dermatofibroma', vasc: 'Vascular Lesion', nv: 'Melanocytic Nevi',
+  // new model
+  MEL: 'Melanoma', BCC: 'Basal Cell Carcinoma', AK: 'Actinic Keratosis',
+  SCC: 'Squamous Cell Carcinoma', BKL: 'Benign Keratosis',
+  DF: 'Dermatofibroma', NV: 'Melanocytic Nevi', VASC: 'Vascular Lesion',
 }
 
 
@@ -430,16 +435,18 @@ const ProfilePage = () => {
         .finally(() => setLoadingScans(false))
 
       // Fetch appointments
-      axios.get(`${API}/appointments`, { headers: { Authorization: `Bearer ${token}` } })
+      axios.get(`${API}/appointments/my`, { headers: { Authorization: `Bearer ${token}` } })
         .then(res => setAppointments(res.data.appointments || []))
         .catch(() => setAppointments([]))
         .finally(() => setLoadingApts(false))
     }
   }, [token])
 
-  const total    = scans.length
-  const highRisk = scans.filter(s => s.risk_level === 'High Risk').length
-  const safe     = total - highRisk
+  const total       = scans.length
+  const highRisk    = scans.filter(s => s.risk_level === 'High Risk').length
+  const moderateRisk = scans.filter(s => s.risk_level === 'Moderate Risk').length
+  const safe        = scans.filter(s => s.risk_level === 'Low Risk').length
+  const lastScan    = scans[0]
 
   const getInitials = (name) =>
     name ? name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : '?'
@@ -527,11 +534,29 @@ const ProfilePage = () => {
         </motion.div>
 
         {/* ── Stats ── */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <StatCard icon={Activity}      label="Total Scans"        value={total}    max={total} ringColor="#3b82f6" delay={0.1} />
-          <StatCard icon={AlertTriangle} label="High Risk Findings" value={highRisk} max={total} ringColor="#ef4444" delay={0.2} />
-          <StatCard icon={CheckCircle}   label="Safe Results"       value={safe}     max={total} ringColor="#10b981" delay={0.3} />
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <StatCard icon={Activity}      label="Total Scans"     value={total}        max={total} ringColor="#3b82f6" delay={0.1} />
+          <StatCard icon={AlertTriangle} label="High Risk"       value={highRisk}     max={total} ringColor="#ef4444" delay={0.2} />
+          <StatCard icon={AlertCircle}   label="Moderate Risk"   value={moderateRisk} max={total} ringColor="#f59e0b" delay={0.25} />
+          <StatCard icon={CheckCircle}   label="Low Risk"        value={safe}         max={total} ringColor="#10b981" delay={0.3} />
         </div>
+        {lastScan && (
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}
+            className="rounded-2xl border border-blue-100 dark:border-[#1a3260] bg-white dark:bg-[#0d1f3c] p-4 flex items-center gap-4 shadow-sm">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-blue-50 dark:bg-[#112248] flex-shrink-0">
+              <Activity className="w-5 h-5 text-blue-500" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-gray-400 dark:text-[#2d4a78] font-bold uppercase tracking-widest">Last Scan</p>
+              <p className="text-gray-800 dark:text-[#e8f0ff] font-bold text-sm truncate">
+                {NAME_MAP[lastScan.predicted_label] || lastScan.predicted_label} — {lastScan.risk_level || 'Unknown Risk'}
+              </p>
+            </div>
+            <p className="text-xs text-gray-400 dark:text-[#6b8fc2] flex-shrink-0">
+              {lastScan.created_at ? new Date(lastScan.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : ''}
+            </p>
+          </motion.div>
+        )}
 
         {/* ── Tabs ── */}
         <motion.div

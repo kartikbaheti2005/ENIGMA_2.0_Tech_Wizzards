@@ -91,133 +91,150 @@ app.include_router(admin_module.router)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PyTorch MODEL SETUP
-#  Architecture from best_model.pth (discovered by inspecting data.pkl):
-#    image_branch : EfficientNet-B3  →  1536-dim features
-#    image_fc     : Linear(1536, 512) + BatchNorm1d + ReLU
-#    meta_fc      : Linear(11, 128)   + BatchNorm1d + ReLU
-#    fusion       : Linear(640, 8)    →  8 class logits
+#  ── DUAL MODEL STRATEGY ──────────────────────────────────────────────────────
+#  Phase 1 (NOW):    Uses old EfficientNet-B0 from efficientnet_best/data.pkl
+#  Phase 2 (AFTER TRAINING): Switch to new DualBranchSkinModel (best_model.pth)
+#  To switch: set USE_NEW_MODEL = True after placing best_model.pth in backend/
 # ══════════════════════════════════════════════════════════════════════════════
 
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
+import torchvision.models as tv_models
 from torchvision import models
 
-MODEL_PATH = "best_model.pth"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-CLASSES = ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc", "unk"]
+# ── SWITCH THIS TO True AFTER best_model.pth IS TRAINED AND PLACED IN backend/ ──
+USE_NEW_MODEL = True
+
+# ── Old model config (EfficientNet-B0, data.pkl) ─────────────────────────────
+# Try __file__ first, fallback to cwd (needed for uvicorn on Windows)
+_BACKEND_DIR      = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
+OLD_MODEL_FOLDER  = os.path.join(_BACKEND_DIR, "efficientnet_best")
+# Also try cwd-relative path as fallback
+if not os.path.isdir(OLD_MODEL_FOLDER):
+    OLD_MODEL_FOLDER = os.path.join(os.getcwd(), "efficientnet_best")
+OLD_MODEL_WEIGHTS = os.path.join(OLD_MODEL_FOLDER, "data.pkl")
+OLD_NUM_CLASSES   = 7
+
+# ── New model config (EfficientNet-B2, best_model.pth) ───────────────────────
+NEW_MODEL_PATH = "best_model.pth"
+
+# ── Classes ───────────────────────────────────────────────────────────────────
+OLD_CLASSES = ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"]
+NEW_CLASSES = ["AK", "BCC", "BKL", "DF", "MEL", "NV", "SCC", "VASC"]
+CLASSES     = NEW_CLASSES if USE_NEW_MODEL else OLD_CLASSES
 
 RISK_MAP = {
-    "mel":   "High Risk",
-    "bcc":   "High Risk",
-    "akiec": "High Risk",
-    "bkl":   "Moderate Risk",
-    "df":    "Moderate Risk",
-    "vasc":  "Moderate Risk",
-    "nv":    "Low Risk",
-    "unk":   "Low Risk",
+    # old model classes
+    "mel": "High Risk", "bcc": "High Risk", "akiec": "High Risk",
+    "bkl": "Moderate Risk", "df": "Moderate Risk", "vasc": "Moderate Risk",
+    "nv": "Low Risk",
+    # new model classes
+    "MEL": "High Risk", "BCC": "High Risk", "AK": "High Risk", "SCC": "High Risk",
+    "BKL": "Moderate Risk", "DF": "Moderate Risk", "VASC": "Moderate Risk",
+    "NV": "Low Risk",
+    "unk": "Low Risk",
 }
 
 NAME_MAP = {
-    "mel":   "Melanoma",
-    "bcc":   "Basal Cell Carcinoma",
-    "akiec": "Actinic Keratosis",
-    "bkl":   "Benign Keratosis",
-    "df":    "Dermatofibroma",
-    "vasc":  "Vascular Lesion",
-    "nv":    "Melanocytic Nevi",
-    "unk":   "Unable to Analyse — Please Retake Photo",
+    # old model classes
+    "mel": "Melanoma", "bcc": "Basal Cell Carcinoma", "akiec": "Actinic Keratosis",
+    "bkl": "Benign Keratosis", "df": "Dermatofibroma",
+    "vasc": "Vascular Lesion", "nv": "Melanocytic Nevi",
+    # new model classes
+    "MEL": "Melanoma", "BCC": "Basal Cell Carcinoma", "AK": "Actinic Keratosis",
+    "SCC": "Squamous Cell Carcinoma", "BKL": "Benign Keratosis",
+    "DF": "Dermatofibroma", "VASC": "Vascular Lesion", "NV": "Melanocytic Nevi",
+    "unk": "Unable to Analyse — Please Retake Photo",
 }
 
-# Note: current model has a known accuracy issue due to metadata branch mismatch.
-# A new model trained on 3 combined datasets is pending. Until then, low-confidence
-# predictions are returned as "unk" to avoid misleading the user.
-MODEL_RELIABLE = False  # Set True once new best_model.pth is deployed
-
-# Base transform — 300x300 is EfficientNet-B3 native resolution (better than 224)
+# ── Transforms ────────────────────────────────────────────────────────────────
 IMG_TRANSFORM = transforms.Compose([
-    transforms.Resize((300, 300)),
+    transforms.Resize((300, 300)),   # matches training notebook
     transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    ),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-# TTA transforms — 5 augmented views averaged at inference time
 TTA_TRANSFORMS = [
-    # 1. Standard (same as base)
-    transforms.Compose([
-        transforms.Resize((300, 300)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]),
-    # 2. Horizontal flip
-    transforms.Compose([
-        transforms.Resize((300, 300)),
-        transforms.RandomHorizontalFlip(p=1.0),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]),
-    # 3. Vertical flip
-    transforms.Compose([
-        transforms.Resize((300, 300)),
-        transforms.RandomVerticalFlip(p=1.0),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]),
-    # 4. Center crop then resize
-    transforms.Compose([
-        transforms.Resize((330, 330)),
-        transforms.CenterCrop(300),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]),
-    # 5. Slight rotation
-    transforms.Compose([
-        transforms.Resize((300, 300)),
-        transforms.RandomRotation(degrees=15),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]),
+    transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]),
+    transforms.Compose([transforms.Resize((224, 224)), transforms.RandomHorizontalFlip(p=1.0),
+        transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]),
+    transforms.Compose([transforms.Resize((224, 224)), transforms.RandomVerticalFlip(p=1.0),
+        transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]),
+    transforms.Compose([transforms.Resize((256, 256)), transforms.CenterCrop(224),
+        transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]),
+    transforms.Compose([transforms.Resize((224, 224)), transforms.RandomRotation(degrees=15),
+        transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]),
 ]
 
-
-class DualBranchSkinModel(nn.Module):
-    """
-    Custom dual-branch model matching best_model.pth exactly:
-      - image_branch : EfficientNet-B3 feature extractor (outputs 1536)
-      - image_fc     : Linear(1536->512) + BN + ReLU
-      - meta_fc      : Linear(11->128)   + BN + ReLU
-      - fusion       : Linear(640->8)
-    """
+# ── Old Model — matches data.pkl keys exactly ────────────────────────────────
+# Discovered from error messages:
+#   features.0.0.weight: [32, 1, 3, 3] → input channels = 1 (GRAYSCALE)
+#   embedding_head.2.weight: [256, 1280] → Linear(1280, 256)
+#   classifier.weight: [7, 256] → Linear(256, 7)
+class OldSkinModel(nn.Module):
     def __init__(self):
         super().__init__()
-        efficientnet = models.efficientnet_b3(weights=None)
-        self.image_branch = nn.Sequential(
-            efficientnet.features,
-            efficientnet.avgpool,
+        # EfficientNet-B0 with GRAYSCALE input (1 channel, not 3)
+        base = tv_models.efficientnet_b0(weights=None)
+        # Replace first conv to accept 1-channel grayscale input
+        base.features[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1, bias=False)
+        self.features   = base.features
+        self.avgpool    = base.avgpool
+        # embedding_head: Dropout + Flatten + Linear(1280->256)
+        self.embedding_head = nn.Sequential(
+            nn.Dropout(p=0.2),
             nn.Flatten(),
+            nn.Linear(1280, 256),  # 256 not 512
         )
+        # classifier: Linear(256->7)
+        self.classifier = nn.Linear(256, OLD_NUM_CLASSES)
+
+    def forward(self, image, meta=None):
+        # Convert RGB to grayscale if needed
+        if image.shape[1] == 3:
+            image = 0.299*image[:,0:1] + 0.587*image[:,1:2] + 0.114*image[:,2:3]
+        x = self.features(image)
+        x = self.avgpool(x)
+        x = self.embedding_head(x)
+        return self.classifier(x)
+
+# ── New Model V2 — EfficientNet-B4 + Metadata ────────────────────────────────
+# Architecture verified from saved checkpoint:
+#   image_fc.0.weight: [512, 1792] → B4 features=1792, Linear(1792→512)
+#   meta_fc.0.weight:  [128, 11]   → Linear(11→128)
+#   meta_fc.2.weight:  [256, 128]  → Linear(128→256)
+#   fusion.0.weight:   [256, 768]  → Linear(768→256), 512+256=768
+import timm as _timm
+
+class DualBranchSkinModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.image_branch = _timm.create_model('efficientnet_b4', pretrained=False)
+        img_out = self.image_branch.classifier.in_features  # 1792
+        self.image_branch.classifier = nn.Identity()
         self.image_fc = nn.Sequential(
-            nn.Linear(1536, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
+            nn.Linear(1792, 512), nn.BatchNorm1d(512), nn.ReLU(), nn.Dropout(0.4)
         )
         self.meta_fc = nn.Sequential(
-            nn.Linear(11, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
+            nn.Linear(11, 128),  nn.ReLU(),
+            nn.Linear(128, 256), nn.BatchNorm1d(256), nn.ReLU(), nn.Dropout(0.3)
         )
-        self.fusion = nn.Linear(640, 8)
+        self.fusion = nn.Sequential(
+            nn.Linear(768, 256), nn.BatchNorm1d(256), nn.ReLU(), nn.Dropout(0.4),
+            nn.Linear(256, 8)
+        )
 
-    def forward(self, image, meta):
-        img_feat = self.image_branch(image)
-        img_out  = self.image_fc(img_feat)
-        meta_out = self.meta_fc(meta)
-        combined = torch.cat([img_out, meta_out], dim=1)
-        return self.fusion(combined)
+    def forward(self, image, meta=None):
+        img_feat = self.image_fc(self.image_branch(image))
+        if meta is not None and meta.abs().sum() > 0:
+            meta_feat = self.meta_fc(meta)
+        else:
+            meta_feat = torch.zeros(img_feat.shape[0], 256, device=img_feat.device)
+        return self.fusion(torch.cat([img_feat, meta_feat], dim=1))
 
 
 # Global model variable
@@ -225,48 +242,215 @@ torch_model = None
 
 
 def load_pytorch_model():
-    global torch_model
+    global torch_model, CLASSES
 
-    if not os.path.exists(MODEL_PATH):
-        print(f"❌ best_model.pth not found at: {os.path.abspath(MODEL_PATH)}")
-        print(f"   Place best_model.pth inside:  {os.path.abspath('.')}")
-        return
-
-    try:
-        print(f"⏳ Loading best_model.pth from {os.path.abspath(MODEL_PATH)} ...")
-        checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
-
-        model = DualBranchSkinModel()
-
-        # Handle all checkpoint formats
-        if isinstance(checkpoint, nn.Module):
-            # Full model object saved directly
-            torch_model = checkpoint.to(DEVICE).eval()
-            print(f"✅ best_model.pth loaded (full model) on {DEVICE}")
+    if USE_NEW_MODEL:
+        # ── Load new DualBranchSkinModel (best_model.pth) ─────────────────────
+        if not os.path.exists(NEW_MODEL_PATH):
+            print(f"❌ best_model.pth not found. Place it in: {os.path.abspath('.')}")
+            print(f"   OR set USE_NEW_MODEL = False to use old model temporarily.")
             return
+        try:
+            print(f"⏳ Loading new DualBranchSkinModel from {NEW_MODEL_PATH} ...")
+            checkpoint  = torch.load(NEW_MODEL_PATH, map_location=DEVICE)
+            model       = DualBranchSkinModel()
+            state_dict  = checkpoint.get("model_state_dict") or checkpoint.get("state_dict") or checkpoint
+            model.load_state_dict(state_dict, strict=False)
+            torch_model = model.to(DEVICE).eval()
+            CLASSES     = NEW_CLASSES
+            print(f"✅ New DualBranchSkinModel loaded on {DEVICE} | Classes: {CLASSES}")
+        except Exception as e:
+            print(f"❌ Failed to load new model: {e}")
+            torch_model = None
+    else:
+        # ── Load old EfficientNet-B0 (efficientnet_best/data.pkl) ─────────────
+        if not os.path.isdir(OLD_MODEL_FOLDER) or not os.path.isfile(OLD_MODEL_WEIGHTS):
+            print(f"❌ Old model weights not found at: {OLD_MODEL_WEIGHTS}")
+            return
+        try:
+            print(f"⏳ Loading old EfficientNet-B0 from {OLD_MODEL_WEIGHTS} ...")
 
-        if isinstance(checkpoint, dict):
-            # Look for common state_dict wrapper keys
-            for key in ("model_state_dict", "state_dict", "model"):
-                if key in checkpoint:
-                    state_dict = checkpoint[key]
-                    break
+            # data.pkl was saved with torch.save() using a non-standard format
+            # Need to handle persistent_id by using pickle directly
+            import pickle
+            import io as _io
+
+            class _TorchUnpickler(pickle.Unpickler):
+                """Handles legacy torch save format with persistent_load."""
+                def persistent_load(self, saved_id):
+                    # saved_id is a tuple like ('storage', StorageType, key, location, size)
+                    if isinstance(saved_id, tuple) and saved_id[0] == 'storage':
+                        storage_type = saved_id[1]
+                        key          = saved_id[2]
+                        location     = saved_id[3]
+                        size         = saved_id[4]
+                        storage      = storage_type(size)
+                        return storage
+                    return saved_id
+
+            # Try standard torch.load first
+            loaded = None
+            try:
+                loaded = torch.load(OLD_MODEL_WEIGHTS, map_location=DEVICE, weights_only=False)
+            except Exception:
+                # Fallback: use custom unpickler for legacy format
+                with open(OLD_MODEL_WEIGHTS, 'rb') as f:
+                    unpickler = _TorchUnpickler(f)
+                    loaded    = unpickler.load()
+
+            # loaded could be state_dict or full model
+            model = OldSkinModel()
+            if isinstance(loaded, dict):
+                model.load_state_dict(loaded, strict=False)
             else:
-                # The dict itself is the state_dict
-                state_dict = checkpoint
-        else:
-            raise ValueError(f"Unknown checkpoint format: {type(checkpoint)}")
+                model = loaded
 
-        model.load_state_dict(state_dict, strict=False)
-        torch_model = model.to(DEVICE).eval()
-        print(f"✅ best_model.pth loaded successfully on {DEVICE}")
-
-    except Exception as e:
-        print(f"❌ Failed to load best_model.pth: {e}")
-        torch_model = None
+            torch_model = model.to(DEVICE).eval()
+            CLASSES     = OLD_CLASSES
+            print(f"✅ Old EfficientNet-B0 loaded on {DEVICE} | Classes: {CLASSES}")
+            print(f"   ℹ️  To switch to new model after training: set USE_NEW_MODEL = True")
+        except Exception as e:
+            print(f"❌ Failed to load old model: {e}")
+            print(f"   The data.pkl format may be incompatible with your PyTorch version.")
+            print(f"   Once best_model.pth is ready from Kaggle, set USE_NEW_MODEL = True")
+            torch_model = None
 
 
 load_pytorch_model()
+print(f"📁 Backend dir  : {_BACKEND_DIR}")
+print(f"📁 Old model    : {OLD_MODEL_WEIGHTS}")
+print(f"📁 Model loaded : {torch_model is not None}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  GRAD-CAM — Visual Explainability
+#  Generates a heatmap showing WHICH part of the image triggered the prediction
+# ══════════════════════════════════════════════════════════════════════════════
+
+import cv2
+import base64
+
+# Global hooks storage
+_gradcam_features = {}
+_gradcam_gradients = {}
+
+def _register_gradcam_hooks(model):
+    """Register hooks on last conv layer. Works for both old and new model."""
+    try:
+        if USE_NEW_MODEL:
+            # timm EfficientNet-B4: model.image_branch is the full efficientnet
+            # The feature extractor is model.image_branch.blocks — last block is blocks[-1]
+            # Try multiple access patterns for robustness
+            if hasattr(model.image_branch, 'blocks'):
+                target = model.image_branch.blocks[-1]   # timm standard
+            elif hasattr(model.image_branch, 'features'):
+                target = model.image_branch.features[-1] # torchvision standard
+            else:
+                target = list(model.image_branch.children())[-2]  # fallback
+        else:
+            # OldSkinModel: self.features = efficientnet.features
+            target = model.features[-1]
+        print(f"Grad-CAM hook target: {type(target).__name__}")
+    except Exception as e:
+        print(f"Grad-CAM hook registration failed: {e}")
+        return None, None
+
+    def forward_hook(module, input, output):
+        _gradcam_features['value'] = output.detach()
+
+    def backward_hook(module, grad_input, grad_output):
+        _gradcam_gradients['value'] = grad_output[0].detach()
+
+    fh = target.register_forward_hook(forward_hook)
+    bh = target.register_full_backward_hook(backward_hook)
+    return fh, bh
+
+
+def generate_gradcam(model, image_bytes, class_idx, device):
+    """
+    Generate a Grad-CAM heatmap for the given image and predicted class.
+
+    Returns:
+        heatmap_base64: str  — base64 PNG of heatmap overlaid on original image
+        cam_base64:     str  — base64 PNG of raw heatmap only
+    """
+    try:
+        # 1. Preprocess image — needs grad so no torch.no_grad()
+        pil_img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
+        img_tensor = IMG_TRANSFORM(pil_img).unsqueeze(0).to(device)
+        img_tensor.requires_grad_(True)
+
+        # 2. Build default meta tensor
+        meta_tensor = build_meta_vector(None, None, None)
+
+        # 3. Register hooks
+        fh, bh = _register_gradcam_hooks(model)
+        if fh is None:
+            return None, None
+
+        # 4. Forward + backward pass with gradients enabled
+        model.eval()
+        _gradcam_features.clear()
+        _gradcam_gradients.clear()
+
+        torch.set_grad_enabled(True)
+        if USE_NEW_MODEL:
+            outputs = model(img_tensor, None)  # No meta for gradcam — image only
+        else:
+            outputs = model(img_tensor)
+
+        # 5. Backward pass on predicted class
+        model.zero_grad()
+        class_score = outputs[0, class_idx]
+        class_score.backward()
+        torch.set_grad_enabled(False)
+
+        # 6. Remove hooks
+        fh.remove()
+        bh.remove()
+
+        if 'value' not in _gradcam_features or 'value' not in _gradcam_gradients:
+            return None, None
+
+        # 7. Compute Grad-CAM
+        features  = _gradcam_features['value'].detach().cpu()   # (1, C, H, W)
+        gradients = _gradcam_gradients['value'].detach().cpu()  # (1, C, H, W)
+
+        # Global average pool gradients over spatial dims
+        weights = gradients.mean(dim=(2, 3), keepdim=True)  # (1, C, 1, 1)
+
+        # Weighted sum of feature maps
+        cam = (weights * features).sum(dim=1, keepdim=True)  # (1, 1, H, W)
+        cam = torch.relu(cam)  # keep only positive influence
+        cam = cam.squeeze().numpy()  # (H, W)
+
+        # 8. Normalize and resize to original image size
+        if cam.max() > cam.min():
+            cam = (cam - cam.min()) / (cam.max() - cam.min())
+        else:
+            cam = np.zeros_like(cam)
+
+        # Resize to 224x224 (model input size)
+        cam_resized = cv2.resize(cam, (224, 224))
+
+        # 9. Apply colormap (COLORMAP_JET: blue=low, red=high attention)
+        cam_uint8  = np.uint8(255 * cam_resized)
+        heatmap    = cv2.applyColorMap(cam_uint8, cv2.COLORMAP_JET)
+        heatmap_rgb = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
+
+        # 10. Overlay on original image
+        orig_img = np.array(pil_img.resize((224, 224)))
+        overlay  = cv2.addWeighted(orig_img, 0.55, heatmap_rgb, 0.45, 0)
+
+        # 11. Encode both as base64 PNG
+        def to_base64(arr):
+            _, buf = cv2.imencode('.png', cv2.cvtColor(arr, cv2.COLOR_RGB2BGR))
+            return "data:image/png;base64," + base64.b64encode(buf).decode('utf-8')
+
+        return to_base64(overlay), to_base64(heatmap_rgb)
+
+    except Exception as e:
+        print(f"⚠️  Grad-CAM failed: {e}")
+        return None, None
 
 
 # ── DB dependency ─────────────────────────────────────────────────────────────
@@ -281,36 +465,47 @@ def get_db():
 # ── Build metadata vector for the model ──────────────────────────────────────
 def build_meta_vector(age=None, gender=None, lesion_location=None):
     """
-    11-feature vector:
-    [age_norm, sex_male, sex_female,
-     loc_back, loc_lower_extremity, loc_trunk,
-     loc_upper_extremity, loc_abdomen, loc_face, loc_chest, loc_foot]
+    11-feature vector matching training notebook exactly:
+    [age_norm, sex_male, sex_female, sex_unknown,
+     site_anterior_torso, site_posterior_torso, site_upper_extremity,
+     site_lower_extremity, site_head_neck, site_palms_soles, site_oral_genital]
     """
     vec = [0.0] * 11
 
+    # Age — 0.0 = mean (neutral when unknown)
     try:
-        vec[0] = min(float(age), 100.0) / 100.0 if age else 0.0
+        if age is not None:
+            raw_age = float(age)
+            vec[0]  = (raw_age - 50.0) / 15.0
+        else:
+            vec[0] = 0.0  # neutral — do not bias toward any age
     except (ValueError, TypeError):
         vec[0] = 0.0
 
+    # Sex — all zeros = unknown/neutral (do not force sex_unknown=1 when not provided)
     if gender:
-        g = gender.lower()
-        if g in ("male", "m"):
-            vec[1] = 1.0
-        elif g in ("female", "f"):
-            vec[2] = 1.0
+        g = str(gender).lower().strip()
+        if g in ("male", "m"):     vec[1] = 1.0
+        elif g in ("female", "f"): vec[2] = 1.0
+        # else leave all zeros = unknown
 
+    # Anatomical site — all zeros = unknown/neutral
     loc_map = {
-        "back": 3, "lower extremity": 4, "trunk": 5,
-        "upper extremity": 6, "abdomen": 7, "face": 8,
-        "chest": 9, "foot": 10,
+        "anterior torso": 4, "chest": 4, "abdomen": 4,
+        "posterior torso": 5, "back": 5,
+        "upper extremity": 6, "arm": 6, "hand": 6,
+        "lower extremity": 7, "leg": 7, "foot": 7,
+        "head": 8, "neck": 8, "face": 8, "scalp": 8,
+        "palm": 9, "sole": 9,
+        "oral": 10, "genital": 10,
     }
     if lesion_location:
-        ll = lesion_location.lower().strip()
+        ll = str(lesion_location).lower().strip()
         for key, idx in loc_map.items():
             if key in ll:
                 vec[idx] = 1.0
                 break
+        # else leave all zeros = unknown location
 
     return torch.tensor([vec], dtype=torch.float32).to(DEVICE)
 
@@ -387,7 +582,8 @@ async def predict(
             status_code=503,
             detail=(
                 "Model not loaded. "
-                f"Place best_model.pth in: {os.path.abspath('.')}"
+                f"Expected old model at: {OLD_MODEL_WEIGHTS} | "
+                f"Or set USE_NEW_MODEL=True and place best_model.pth in: {os.getcwd()}"
             )
         )
 
@@ -400,21 +596,29 @@ async def predict(
         img_tensor = preprocess_image(contents)
         # Fix: pass sensible defaults if metadata missing
         # Model was trained with mean age ~50, balanced gender, trunk as most common location
-        effective_age      = age             if age             else "50"
-        effective_gender   = gender          if gender          else "unknown"
-        effective_location = lesion_location if lesion_location else "trunk"
-        meta_tensor = build_meta_vector(effective_age, effective_gender, effective_location)
+        # Use actual values if provided, else None (neutral zeros — no bias)
+        effective_age      = age             if age             and str(age).strip()             else None
+        effective_gender   = gender          if gender          and str(gender).strip()          else None
+        effective_location = lesion_location if lesion_location and str(lesion_location).strip() else None
+
+        # Only build meta if at least one value is provided
+        has_metadata = any(v is not None for v in [effective_age, effective_gender, effective_location])
+        meta_tensor  = build_meta_vector(effective_age, effective_gender, effective_location) if has_metadata else None
+        print(f"📊 Metadata: age={effective_age}, gender={effective_gender}, location={effective_location}, using_meta={has_metadata}")
     except ValueError as e:
         raise HTTPException(400, str(e))
 
     start_time = time.time()
     try:
+        # Run TTA inference with no_grad for speed
         with torch.no_grad():
-            # ── Test-Time Augmentation: run 5 augmented views, average probs ──
             tta_tensors = preprocess_image_tta(contents)
-            all_probs = []
+            all_probs   = []
             for tta_tensor in tta_tensors:
-                logits = torch_model(tta_tensor, meta_tensor)
+                if USE_NEW_MODEL:
+                    logits = torch_model(tta_tensor, meta_tensor)  # meta_tensor can be None
+                else:
+                    logits = torch_model(tta_tensor)
                 p = torch.softmax(logits, dim=1).cpu().numpy()[0]
                 all_probs.append(p)
             probs = np.mean(all_probs, axis=0)
@@ -423,24 +627,53 @@ async def predict(
 
     processing_ms = int((time.time() - start_time) * 1000)
 
-    idx        = int(np.argmax(probs[:7]))   # only 7 real classes
-    prediction = CLASSES[idx]
-    confidence = float(probs[idx])
+    num_classes = len(CLASSES)
+    idx         = int(np.argmax(probs[:num_classes]))
+    prediction  = CLASSES[idx]
+    confidence  = float(probs[idx])
 
     # ── Confidence sanity check ───────────────────────────────────────────────
-    # If model is not confident (all probs ~equal = broken/garbage input),
-    # return "uncertain" instead of a misleading high-risk diagnosis
-    MAX_PROB   = float(np.max(probs[:7]))
-    ENTROPY    = float(-np.sum(probs[:7] * np.log(probs[:7] + 1e-9)))
-    MAX_ENTROPY = float(np.log(7))  # max possible entropy for 7 classes
-    UNCERTAINTY = ENTROPY / MAX_ENTROPY   # 0=certain, 1=completely random
+    MAX_PROB    = float(np.max(probs[:num_classes]))
+    ENTROPY     = float(-np.sum(probs[:num_classes] * np.log(probs[:num_classes] + 1e-9)))
+    MAX_ENTROPY = float(np.log(num_classes))
+    UNCERTAINTY = ENTROPY / MAX_ENTROPY
 
-    if UNCERTAINTY > 0.92 or MAX_PROB < 0.20:
-        # Model is essentially guessing — do not report a diagnosis
+    print(f"🔍 Prediction: {prediction} | Confidence: {MAX_PROB:.3f} | Uncertainty: {UNCERTAINTY:.3f}")
+
+    # Old model (grayscale) produces lower max probs — use relaxed thresholds
+    # New model (color, better trained) can use stricter thresholds
+    unc_threshold  = 0.97 if not USE_NEW_MODEL else 0.95
+    prob_threshold = 0.10 if not USE_NEW_MODEL else 0.18
+
+    # Sanitize uncertainty values
+    import math
+    if math.isnan(UNCERTAINTY) or math.isnan(MAX_PROB):
+        prediction = "unk"
+        confidence = 0.0
+    elif UNCERTAINTY > unc_threshold or MAX_PROB < prob_threshold:
         prediction = "unk"
         confidence = MAX_PROB
 
-    all_scores = {CLASSES[i]: round(float(probs[i]), 4) for i in range(7)}
+    # Sanitize NaN/Inf before saving — MySQL and JSON cannot handle them
+    def safe_float(v):
+        import math
+        if v is None: return 0.0
+        try:
+            f = float(v)
+            return 0.0 if (math.isnan(f) or math.isinf(f)) else round(f, 6)
+        except: return 0.0
+
+    probs_clean = [safe_float(p) for p in probs]
+    all_scores  = {CLASSES[i]: safe_float(probs[i]) for i in range(num_classes)}
+
+    # Recalculate prediction safely after sanitizing
+    if any(p > 0 for p in probs_clean):
+        idx        = int(np.argmax(probs_clean[:num_classes]))
+        prediction = CLASSES[idx]
+        confidence = probs_clean[idx]
+    else:
+        prediction = "unk"
+        confidence = 0.0
 
     # Save scan if user is logged in
     image_url = None
@@ -510,13 +743,33 @@ async def predict(
             db.rollback()
             print(f"⚠  Could not save scan to DB: {e}")
 
+    # ── Grad-CAM heatmap generation ──────────────────────────────────────────
+    heatmap_overlay = None
+    heatmap_only    = None
+    try:
+        if torch_model is not None and prediction != "unk":
+            pred_idx = CLASSES.index(prediction) if prediction in CLASSES else 0
+            print(f"🔥 Running Grad-CAM for class {prediction} (idx={pred_idx})")
+            heatmap_overlay, heatmap_only = generate_gradcam(
+                torch_model, contents, pred_idx, DEVICE
+            )
+            print(f"🔥 Grad-CAM result: overlay={'YES' if heatmap_overlay else 'None'}, heatmap={'YES' if heatmap_only else 'None'}")
+        else:
+            print(f"🔥 Grad-CAM skipped — model={torch_model is not None}, prediction={prediction}")
+    except Exception as e:
+        import traceback
+        print(f"⚠️  Grad-CAM error: {e}")
+        traceback.print_exc()
+
     return {
-        "diagnosis":      prediction,
-        "diagnosis_name": NAME_MAP.get(prediction, prediction),
-        "risk_level":     RISK_MAP.get(prediction, "Low Risk"),
-        "confidence":     round(confidence, 4),
-        "all_scores":     all_scores,
-        "image_url":      image_url,
+        "diagnosis":        prediction,
+        "diagnosis_name":   NAME_MAP.get(prediction, prediction),
+        "risk_level":       RISK_MAP.get(prediction, "Low Risk"),
+        "confidence":       round(confidence, 4),
+        "all_scores":       all_scores,
+        "image_url":        image_url,
+        "heatmap_overlay":  heatmap_overlay,   # original image + heatmap blended
+        "heatmap_only":     heatmap_only,       # pure heatmap (jet colormap)
     }
 
 
@@ -606,6 +859,9 @@ def download_scan_report(
     except Exception:
         pass
 
+    # Get all intake fields from extra_metadata
+    intake = extra.get("intake", {})
+
     pdf_bytes = generate_scan_report(
         {
             "id":               scan.id,
@@ -617,11 +873,33 @@ def download_scan_report(
             "raw_output":       scan.raw_output or "{}",
         },
         {
-            "full_name":     current_user.full_name,
-            "email":         current_user.email,
-            "date_of_birth": str(current_user.date_of_birth) if current_user.date_of_birth else "N/A",
-            "gender":        current_user.gender or "N/A",
-            "phone_number":  current_user.phone_number or "N/A",
+            # User profile fields
+            "full_name":        current_user.full_name,
+            "email":            current_user.email,
+            "date_of_birth":    str(current_user.date_of_birth) if current_user.date_of_birth else "N/A",
+            "gender":           current_user.gender or intake.get("gender", "N/A"),
+            "phone_number":     current_user.phone_number or "N/A",
+            # Intake fields
+            "age":              intake.get("age", "N/A"),
+            "skin_type":        intake.get("skin_type", "N/A"),
+            "smoking":          intake.get("smoking", "N/A"),
+            "uv_exposure":      intake.get("uv_exposure", "N/A"),
+            "family_history":   intake.get("family_history", "N/A"),
+            "previous_cancer":  intake.get("previous_cancer", "N/A"),
+            "medications":      intake.get("medications", "None reported"),
+            "new_mole":         intake.get("new_mole", "N/A"),
+            "mole_change":      intake.get("mole_change", "N/A"),
+            "itching":          intake.get("itching", "N/A"),
+            "bleeding":         intake.get("bleeding", "N/A"),
+            "sore_not_healing": intake.get("sore_not_healing", "N/A"),
+            "spread_pigment":   intake.get("spread_pigment", "N/A"),
+            "ldh":              intake.get("ldh", ""),
+            "s100b":            intake.get("s100b", ""),
+            "mia":              intake.get("mia", ""),
+            "vegf":             intake.get("vegf", ""),
+            "lesion_location":  intake.get("lesion_location", "N/A"),
+            "lesion_size":      intake.get("lesion_size", "N/A"),
+            "lesion_duration":  intake.get("lesion_duration", "N/A"),
         },
     )
     filename = f"DermAssist_Report_{current_user.username}_Scan{scan_id}.pdf"

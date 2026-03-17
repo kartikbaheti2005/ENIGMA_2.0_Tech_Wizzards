@@ -6,9 +6,9 @@ import os
 # ─── Configure these with your Gmail credentials ──────────────────────────────
 # Option 1: Set as environment variables (recommended for production)
 # Option 2: Replace the strings directly (for local development only)
-GMAIL_USER = os.getenv("GMAIL_USER", "your_gmail@gmail.com")   # ← replace
-GMAIL_PASS = os.getenv("GMAIL_PASS", "your_app_password_here") # ← replace with App Password
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+GMAIL_USER = os.getenv("GMAIL_USER", "")
+GMAIL_PASS = os.getenv("GMAIL_PASS", "")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 # NOTE: Use Gmail App Password, NOT your regular password.
 # Generate at: https://myaccount.google.com/apppasswords

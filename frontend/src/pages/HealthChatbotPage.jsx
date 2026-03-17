@@ -4,7 +4,7 @@ import { Send, Bot, User, Loader2, AlertCircle, ScanLine } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import axios from 'axios'
 
-const API = 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const QUICK_PROMPTS = [
   { label: 'What is Melanoma?',         text: 'What is melanoma and how dangerous is it?' },

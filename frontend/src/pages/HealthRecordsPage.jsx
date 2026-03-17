@@ -4,7 +4,7 @@ import { Heart, Save, Loader2, AlertCircle, CheckCircle, Activity, ScanLine, Use
 import { useAuth } from '../context/AuthContext'
 import axios from 'axios'
 
-const API = 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const inputCls = `w-full px-4 py-2.5 rounded-xl border text-sm outline-none transition
   bg-white dark:bg-[#091629] border-gray-200 dark:border-[#1a3260]
@@ -232,7 +232,7 @@ export default function HealthRecordsPage() {
                   className="flex items-center justify-between p-4 rounded-2xl bg-white dark:bg-[#0d1f3c] border border-gray-200 dark:border-[#1a3260] shadow-sm">
                   <div className="flex items-center gap-3">
                     {s.image_url
-                      ? <img src={`http://localhost:8000${s.image_url}`} alt="" className="w-12 h-12 rounded-xl object-cover" />
+                      ? <img src={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}${s.image_url}`} alt="" className="w-12 h-12 rounded-xl object-cover" />
                       : <div className="w-12 h-12 rounded-xl bg-gray-100 dark:bg-[#091629] flex items-center justify-center"><ScanLine className="w-5 h-5 text-gray-400" /></div>
                     }
                     <div>

@@ -4,7 +4,7 @@ import { AlertTriangle, TrendingUp, Shield, RefreshCw, Loader2, Activity, ScanLi
 import { useAuth } from '../context/AuthContext'
 import axios from 'axios'
 
-const API = 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const RISK_STYLE = {
   High:     'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 border-red-200 dark:border-red-700',

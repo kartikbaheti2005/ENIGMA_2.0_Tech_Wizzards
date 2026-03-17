@@ -46,6 +46,7 @@ SYM_GREEN = colors.HexColor('#dcfce7')
 SYM_AMBER = colors.HexColor('#fef9c3')
 
 NAME_MAP = {
+    # old model (lowercase)
     'mel':   'Melanoma',
     'bcc':   'Basal Cell Carcinoma',
     'akiec': 'Actinic Keratosis',
@@ -53,10 +54,23 @@ NAME_MAP = {
     'df':    'Dermatofibroma',
     'vasc':  'Vascular Lesion',
     'nv':    'Melanocytic Nevi',
+    # new model (uppercase)
+    'MEL':   'Melanoma',
+    'BCC':   'Basal Cell Carcinoma',
+    'AK':    'Actinic Keratosis',
+    'SCC':   'Squamous Cell Carcinoma',
+    'BKL':   'Benign Keratosis',
+    'DF':    'Dermatofibroma',
+    'NV':    'Melanocytic Nevi',
+    'VASC':  'Vascular Lesion',
 }
 CLASS_RISK = {
+    # old model
     'mel':'High','bcc':'High','akiec':'High',
     'bkl':'Moderate','df':'Moderate','vasc':'Moderate','nv':'Low',
+    # new model
+    'MEL':'High','BCC':'High','AK':'High','SCC':'High',
+    'BKL':'Moderate','DF':'Moderate','VASC':'Moderate','NV':'Low',
 }
 DESCRIPTIONS = {
     'mel':   (
@@ -107,6 +121,22 @@ DESCRIPTIONS = {
         'recommended to confirm the diagnosis and rule out rarer malignant vascular tumors such '
         'as Kaposi sarcoma or angiosarcoma, especially if the lesion bleeds, grows rapidly, '
         'or appears unusual.'
+    ),
+    'SCC':   (
+        'Squamous Cell Carcinoma (SCC) is the second most common form of skin cancer, arising from '
+        'the squamous cells that make up the outer layer of the skin. It can develop from Actinic '
+        'Keratoses and is directly linked to cumulative UV exposure. SCC can spread to lymph nodes '
+        'and distant organs if not treated promptly, especially in immunocompromised individuals. '
+        'Early detection and surgical removal are highly effective. High-risk locations include the '
+        'face, ears, lips, and backs of the hands.'
+    ),
+    'AK':    (
+        'Actinic Keratosis (AK), also known as solar keratosis, is a rough, scaly patch that '
+        'develops on sun-damaged skin. It is considered a precancerous lesion — without treatment, '
+        'approximately 5-10% of AKs can progress to Squamous Cell Carcinoma over time. AKs are '
+        'among the most common lesions treated by dermatologists and are directly caused by '
+        'cumulative ultraviolet radiation exposure. They are most frequently found on the face, '
+        'lips, ears, scalp, neck, and backs of the hands and forearms.'
     ),
     'nv':    (
         'Melanocytic Nevi (common moles) are benign growths formed by clusters of melanocytes. '
@@ -232,7 +262,11 @@ def generate_scan_report(scan_data: dict, user_data: dict) -> bytes:
 
     # ── Pull all values ──────────────────────────────────────────────────────
     risk      = scan_data.get('risk_level', 'Low Risk')
-    dlabel    = scan_data.get('predicted_label', 'nv')
+    # Normalize label — new model uses uppercase
+    _raw_label = scan_data.get('predicted_label', 'nv') or 'nv'
+    # Map uppercase to description keys
+    _label_map = {'AK':'akiec','BCC':'bcc','BKL':'bkl','DF':'df','MEL':'mel','NV':'nv','VASC':'vasc','SCC':'SCC','akiec':'akiec','bcc':'bcc','bkl':'bkl','df':'df','mel':'mel','nv':'nv','vasc':'vasc'}
+    dlabel    = _label_map.get(_raw_label, _raw_label.lower())
     dname     = NAME_MAP.get(dlabel, dlabel)
     conf      = float(scan_data.get('confidence_score', 0)) * 100
     scan_id   = scan_data.get('id', 0)
@@ -360,8 +394,8 @@ def generate_scan_report(scan_data: dict, user_data: dict) -> bytes:
         [Paragraph(f'{conf:.1f}%',        st(36, bold=True, color=BLUE, align=TA_CENTER))],
         [conf_drawing(conf, bw, rcol)],
         [Spacer(1, 2*mm)],
-        [Paragraph('DermAssist v2.0 · MobileNetV2 · TFLite', st(7, color=GRAY, align=TA_CENTER))],
-        [Paragraph('HAM10000 Dataset · 7 Classes · 128×128 px', st(7, color=GRAY, align=TA_CENTER))],
+        [Paragraph('DermAssist v2.1 · EfficientNet-B4', st(7, color=GRAY, align=TA_CENTER))],
+        [Paragraph('ISIC2019 + HAM10000 · 8 Classes · 300×300 px', st(7, color=GRAY, align=TA_CENTER))],
     ], colWidths=[bw],
     style=TableStyle([('TOPPADDING',(0,0),(-1,-1),2),('BOTTOMPADDING',(0,0),(-1,-1),2),
                       ('LEFTPADDING',(0,0),(-1,-1),0),('RIGHTPADDING',(0,0),(-1,-1),0)]))
@@ -626,8 +660,9 @@ def generate_scan_report(scan_data: dict, user_data: dict) -> bytes:
         ('VALIGN', (0,0),(-1,-1), 'MIDDLE'),
     ]
     bar_total = 62*mm
-    for cls in sorted(['mel','bcc','akiec','bkl','df','vasc','nv'],
-                      key=lambda c: raw_scores.get(c, 0), reverse=True):
+    # Use all available score keys (works for both old and new model)
+    all_cls = list(raw_scores.keys()) if raw_scores else ['mel','bcc','akiec','bkl','df','vasc','nv']
+    for cls in sorted(all_cls, key=lambda c: raw_scores.get(c, 0), reverse=True):
         sc     = raw_scores.get(cls, 0)
         pct    = round(sc * 100, 1)
         rt     = CLASS_RISK.get(cls, 'Low')
@@ -774,7 +809,7 @@ def generate_scan_report(scan_data: dict, user_data: dict) -> bytes:
         Paragraph(
             f'<b>Report ID:</b> {report_id}<br/>'
             f'<b>Generated:</b> {now}<br/>'
-            f'<b>Model:</b> DermAssist v2.0 · HAM10000 · 7 Classes',
+            f'<b>Model:</b> DermAssist v2.1 · ISIC2019+HAM10000 · 8 Classes',
             st(7.5, color=GRAY, align=TA_RIGHT, leading=11)
         ),
     ]], colWidths=[115*mm, 55*mm])

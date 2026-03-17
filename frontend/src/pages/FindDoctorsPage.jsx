@@ -9,7 +9,7 @@ import axios from 'axios'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
-const API = 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const CITY_COORDS = {
   'Delhi':      { lat: 28.6139, lng: 77.2090 },
